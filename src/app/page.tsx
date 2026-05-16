@@ -19,6 +19,7 @@ export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [groupLink, setGroupLink] = useState('');
+  const [userGroups, setUserGroups] = useState<Array<{ id: string; name: string }>>([]);
 
   useEffect(() => {
     // 로그인 상태 확인
@@ -26,6 +27,28 @@ export default function Page() {
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
       setLoading(false);
+
+      // 사용자가 속한 그룹 로드
+      if (user) {
+        try {
+          const { data: groups } = await supabase
+            .from('rel_groups_users')
+            .select('groups(id, name)')
+            .eq('user_id', user.id);
+
+          const groupList = (groups ?? [])
+            .map((item: unknown) => {
+              const itemObj = item as { groups?: { id: string; name: string } | { id: string; name: string }[] };
+              const groupsField = itemObj.groups;
+              if (Array.isArray(groupsField)) return groupsField[0];
+              return groupsField;
+            })
+            .filter((g): g is { id: string; name: string } => Boolean(g));
+          setUserGroups(groupList);
+        } catch (error) {
+          console.error('그룹 목록 로드 오류:', error);
+        }
+      }
     };
 
     checkUser();
@@ -225,6 +248,29 @@ export default function Page() {
                 </div>
               </div>
             </section>
+
+            {userGroups.length > 0 ? (
+              <section className='space-y-4 rounded-[1.75rem] bg-slate-950/90 p-6 sm:p-7'>
+                <div>
+                  <p className='text-base font-semibold text-slate-100'>내 그룹</p>
+                  <p className='mt-1 text-sm leading-relaxed text-slate-400'>
+                    {userGroups.length}개 그룹에 참가 중입니다.
+                  </p>
+                </div>
+                <div className='space-y-2'>
+                  {userGroups.map((group) => (
+                    <button
+                      key={group.id}
+                      onClick={() => router.push(`/groups/${group.id}`)}
+                      className='w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-left transition hover:border-cyan-400 hover:bg-slate-800 sm:text-sm'
+                    >
+                      <p className='font-medium text-slate-100'>{group.name}</p>
+                      <p className='mt-1 text-xs text-slate-400'>클릭하여 이동</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
           </div>
         </div>
       </div>

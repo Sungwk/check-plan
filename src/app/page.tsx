@@ -22,44 +22,64 @@ export default function Page() {
   const [userGroups, setUserGroups] = useState<Array<{ id: string; name: string }>>([]);
 
   useEffect(() => {
-    // 로그인 상태 확인
+    const loadUserGroups = async (userId: string) => {
+      try {
+        const { data: groups } = await supabase
+          .from('rel_groups_users')
+          .select('groups(id, name)')
+          .eq('user_id', userId);
+
+        const groupList = (groups ?? [])
+          .map((item: unknown) => {
+            const itemObj = item as {
+              groups?:
+                | { id: string; name: string }
+                | { id: string; name: string }[];
+            };
+
+            const groupsField = itemObj.groups;
+
+            if (Array.isArray(groupsField)) return groupsField[0];
+
+            return groupsField;
+          })
+          .filter((g): g is { id: string; name: string } => Boolean(g));
+
+        setUserGroups(groupList);
+      } catch (error) {
+        console.error('그룹 목록 로드 오류:', error);
+      }
+    };
+
     const checkUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
       setUser(user);
       setLoading(false);
 
-      // 사용자가 속한 그룹 로드
       if (user) {
-        try {
-          const { data: groups } = await supabase
-            .from('rel_groups_users')
-            .select('groups(id, name)')
-            .eq('user_id', user.id);
-
-          const groupList = (groups ?? [])
-            .map((item: unknown) => {
-              const itemObj = item as { groups?: { id: string; name: string } | { id: string; name: string }[] };
-              const groupsField = itemObj.groups;
-              if (Array.isArray(groupsField)) return groupsField[0];
-              return groupsField;
-            })
-            .filter((g): g is { id: string; name: string } => Boolean(g));
-          setUserGroups(groupList);
-        } catch (error) {
-          console.error('그룹 목록 로드 오류:', error);
-        }
+        await loadUserGroups(user.id);
       }
     };
 
     checkUser();
 
-    // 인증 상태 변경 감지
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        setUser(session?.user ?? null);
-        setLoading(false);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_, session) => {
+      const currentUser = session?.user ?? null;
+
+      setUser(currentUser);
+      setLoading(false);
+
+      if (currentUser) {
+        await loadUserGroups(currentUser.id);
+      } else {
+        setUserGroups([]);
       }
-    );
+    });
 
     return () => subscription.unsubscribe();
   }, []);

@@ -12,14 +12,16 @@ type Group = {
   code?: string | null;
 };
 
+type SupabaseUserRelation = {
+  id: string;
+  name: string;
+  color?: string | null;
+};
+
 type GroupMember = {
   user_id: string;
   role: string;
-  users?: {
-    id: string;
-    name: string;
-    color?: string | null;
-  };
+  users?: SupabaseUserRelation | null;
 };
 
 type ScheduleEvent = {
@@ -29,12 +31,16 @@ type ScheduleEvent = {
   title: string;
   start_at: string;
   end_at: string;
-  users?: {
-    id: string;
-    name: string;
-    color?: string | null;
-  };
+  users?: SupabaseUserRelation | null;
 };
+
+function normalizeSupabaseUser(
+  value: SupabaseUserRelation | SupabaseUserRelation[] | null | undefined
+): SupabaseUserRelation | null {
+  if (!value) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
+}
+
 
 function formatDateLabel(value: string) {
   const date = new Date(value);
@@ -54,7 +60,12 @@ function formatTime(value: string) {
 }
 
 function getLocalDateTimeInputValue(date: Date) {
-  return date.toISOString().slice(0, 16);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 function getCalendarMonthDays(month: Date) {
@@ -88,6 +99,13 @@ function formatCalendarTitle(month: Date) {
   });
 }
 
+function getLocalDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function Page() {
   const params = useParams();
   const router = useRouter();
@@ -109,9 +127,17 @@ export default function Page() {
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editStart, setEditStart] = useState('');
+  const [editEnd, setEditEnd] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const startInputRef = useRef<HTMLInputElement>(null);
   const endInputRef = useRef<HTMLInputElement>(null);
+  const editStartInputRef = useRef<HTMLInputElement>(null);
+  const editEndInputRef = useRef<HTMLInputElement>(null);
 
   const openDateTimePicker = (inputRef: RefObject<HTMLInputElement | null>) => {
     const input = inputRef.current;
@@ -124,9 +150,23 @@ export default function Page() {
   const eventsByDay = useMemo(() => {
     const grouped: Record<string, ScheduleEvent[]> = {};
     events.forEach((event) => {
-      const day = new Date(event.start_at).toISOString().slice(0, 10);
-      if (!grouped[day]) grouped[day] = [];
-      grouped[day].push(event);
+      const start = new Date(event.start_at);
+      const end = new Date(event.end_at);
+
+      const current = new Date(start);
+
+      current.setHours(0, 0, 0, 0);
+      end.setHours(0, 0, 0, 0);
+
+      while (current <= end) {
+        const dayKey = getLocalDateKey(current);
+
+        if (!grouped[dayKey]) grouped[dayKey] = [];
+
+        grouped[dayKey].push(event);
+
+        current.setDate(current.getDate() + 1);
+      }
     });
 
     return grouped;
@@ -180,10 +220,10 @@ export default function Page() {
         const normalizedMembers = ((memberResult.data ?? []) as unknown as Array<{
           user_id: string;
           role: string;
-          users?: { id: string; name: string; color?: string | null } | { id: string; name: string; color?: string | null }[];
+          users?: SupabaseUserRelation | SupabaseUserRelation[] | null;
         }>).map((item) => ({
           ...item,
-          users: Array.isArray(item.users) ? item.users[0] : item.users,
+          users: normalizeSupabaseUser(item.users),
         })) as GroupMember[];
 
         const normalizedEvents = ((scheduleResult.data ?? []) as unknown as Array<{
@@ -193,10 +233,10 @@ export default function Page() {
           title: string;
           start_at: string;
           end_at: string;
-          users?: { id: string; name: string; color?: string | null } | { id: string; name: string; color?: string | null }[];
+          users?: SupabaseUserRelation | SupabaseUserRelation[] | null;
         }>).map((item) => ({
           ...item,
-          users: Array.isArray(item.users) ? item.users[0] : item.users,
+          users: normalizeSupabaseUser(item.users),
         })) as ScheduleEvent[];
 
         setMembers(normalizedMembers);
@@ -262,7 +302,7 @@ export default function Page() {
       if (inserted) {
         const normalizedInserted = {
           ...inserted,
-          users: Array.isArray(inserted.users) ? inserted.users[0] : inserted.users,
+          users: normalizeSupabaseUser(inserted.users),
         } as ScheduleEvent;
 
         setEvents((prev) => [...prev, normalizedInserted].sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime()));
@@ -280,6 +320,106 @@ export default function Page() {
   };
 
   const attendeeName = (event: ScheduleEvent) => event.users?.name || event.user_id;
+
+  const startEditEvent = (event: ScheduleEvent) => {
+    setEditingEventId(event.id);
+    setEditTitle(event.title);
+    setEditStart(getLocalDateTimeInputValue(new Date(event.start_at)));
+    setEditEnd(getLocalDateTimeInputValue(new Date(event.end_at)));
+    setEditError('');
+  };
+
+  const cancelEdit = () => {
+    setEditingEventId(null);
+    setEditTitle('');
+    setEditStart('');
+    setEditEnd('');
+    setEditError('');
+  };
+
+  const handleUpdateSchedule = async (eventId: string) => {
+    setEditError('');
+    if (!editTitle.trim()) {
+      setEditError('일정 제목을 입력해주세요.');
+      return;
+    }
+
+    const start = new Date(editStart);
+    const end = new Date(editEnd);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      setEditError('유효한 날짜/시간을 입력해주세요.');
+      return;
+    }
+
+    if (end <= start) {
+      setEditError('종료 시간은 시작 시간보다 이후여야 합니다.');
+      return;
+    }
+
+    setEditLoading(true);
+    try {
+      const { error: updateError, data: updated } = await supabase
+        .from('group_schedules')
+        .update({
+          title: editTitle.trim(),
+          start_at: start.toISOString(),
+          end_at: end.toISOString(),
+        })
+        .eq('id', eventId)
+        .select('id, group_id, user_id, title, start_at, end_at, users(id, name, color)')
+        .single();
+
+      if (updateError) {
+        console.error('일정 수정 오류:', updateError);
+        setEditError('일정 수정 중 오류가 발생했습니다.');
+        return;
+      }
+
+      if (updated) {
+        const normalizedUpdated = {
+          ...updated,
+          users: normalizeSupabaseUser(updated.users),
+        } as ScheduleEvent;
+
+        setEvents((prev) =>
+          prev.map((e) => (e.id === eventId ? normalizedUpdated : e)).sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime())
+        );
+        cancelEdit();
+      }
+    } catch (error) {
+      console.error('일정 수정 예외:', error);
+      setEditError('일정 수정 중 예외가 발생했습니다.');
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleDeleteSchedule = async (eventId: string) => {
+    if (!confirm('이 일정을 삭제하시겠습니까?')) {
+      return;
+    }
+
+    try {
+      const { error: deleteError } = await supabase
+        .from('group_schedules')
+        .delete()
+        .eq('id', eventId);
+
+      if (deleteError) {
+        console.error('일정 삭제 오류:', deleteError);
+        alert('일정 삭제 중 오류가 발생했습니다.');
+        return;
+      }
+
+      setEvents((prev) => prev.filter((e) => e.id !== eventId));
+      if (editingEventId === eventId) {
+        cancelEdit();
+      }
+    } catch (error) {
+      console.error('일정 삭제 예외:', error);
+      alert('일정 삭제 중 예외가 발생했습니다.');
+    }
+  };
 
   if (loading) {
     return (
@@ -415,7 +555,7 @@ export default function Page() {
 
               <div className='mt-3 grid grid-cols-7 gap-2'>
                 {calendarDays.map((date) => {
-                  const dateKey = date.toISOString().slice(0, 10);
+                  const dateKey = getLocalDateKey(date);
                   const dayEvents = eventsByDay[dateKey] ?? [];
                   const isCurrentMonth = date.getMonth() === calendarMonth.getMonth();
                   const isSelected = selectedDate === dateKey;
@@ -464,9 +604,84 @@ export default function Page() {
                   <div className='mt-4 space-y-3'>
                     {selectedDayEvents.map((eventItem) => (
                       <div key={eventItem.id} className='rounded-3xl border border-slate-700 bg-slate-950/95 p-3'>
-                        <p className='text-sm font-semibold text-slate-100'>{eventItem.title}</p>
-                        <p className='mt-1 text-xs text-slate-400'>등록자: {attendeeName(eventItem)}</p>
-                        <p className='mt-1 text-xs text-slate-400'>시간: {formatTime(eventItem.start_at)} - {formatTime(eventItem.end_at)}</p>
+                        {editingEventId === eventItem.id ? (
+                          <form onSubmit={(e) => {
+                            e.preventDefault();
+                            handleUpdateSchedule(eventItem.id);
+                          }} className='space-y-3'>
+                            <input
+                              type='text'
+                              value={editTitle}
+                              onChange={(e) => setEditTitle(e.target.value)}
+                              placeholder='일정 제목'
+                              className='w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20'
+                            />
+                            <div className='grid gap-2 sm:grid-cols-2'>
+                              <div onClick={() => editStartInputRef.current?.focus()} className='cursor-text'>
+                                <input
+                                  ref={editStartInputRef}
+                                  type='datetime-local'
+                                  value={editStart}
+                                  onChange={(e) => setEditStart(e.target.value)}
+                                  step='60'
+                                  className='w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20'
+                                />
+                              </div>
+                              <div onClick={() => editEndInputRef.current?.focus()} className='cursor-text'>
+                                <input
+                                  ref={editEndInputRef}
+                                  type='datetime-local'
+                                  value={editEnd}
+                                  onChange={(e) => setEditEnd(e.target.value)}
+                                  step='60'
+                                  className='w-full rounded-xl border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20'
+                                />
+                              </div>
+                            </div>
+                            {editError ? <p className='text-xs text-rose-400'>{editError}</p> : null}
+                            <div className='flex gap-2'>
+                              <button
+                                type='submit'
+                                disabled={editLoading}
+                                className='flex-1 rounded-xl bg-cyan-500 px-3 py-2 text-xs font-medium text-white hover:bg-cyan-600 disabled:opacity-50'
+                              >
+                                {editLoading ? '저장 중...' : '저장'}
+                              </button>
+                              <button
+                                type='button'
+                                onClick={cancelEdit}
+                                disabled={editLoading}
+                                className='flex-1 rounded-xl border border-slate-600 bg-slate-900 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800'
+                              >
+                                취소
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <>
+                            <p className='text-sm font-semibold text-slate-100'>{eventItem.title}</p>
+                            <p className='mt-1 text-xs text-slate-400'>등록자: {attendeeName(eventItem)}</p>
+                            <p className='mt-1 text-xs text-slate-400'>시간: {formatTime(eventItem.start_at)} - {formatTime(eventItem.end_at)}</p>
+                            {user?.id === eventItem.user_id ? (
+                              <div className='mt-3 flex gap-2'>
+                                <button
+                                  type='button'
+                                  onClick={() => startEditEvent(eventItem)}
+                                  className='flex-1 rounded-xl bg-blue-500/70 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 transition'
+                                >
+                                  수정
+                                </button>
+                                <button
+                                  type='button'
+                                  onClick={() => handleDeleteSchedule(eventItem.id)}
+                                  className='flex-1 rounded-xl bg-rose-500/70 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-600 transition'
+                                >
+                                  삭제
+                                </button>
+                              </div>
+                            ) : null}
+                          </>
+                        )}
                       </div>
                     ))}
                   </div>
